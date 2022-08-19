@@ -1,17 +1,18 @@
 package machine
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/nutanix-cloud-native/prism-go-client/utils"
+	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/v3"
+	machinev1 "github.com/openshift/api/machine/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/klog/v2"
 
-	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/pkg/nutanix/v3"
-	"github.com/nutanix-cloud-native/prism-go-client/pkg/utils"
-	machinev1 "github.com/openshift/api/machine/v1"
 	clientpkg "github.com/openshift/machine-api-provider-nutanix/pkg/client"
 )
 
@@ -101,7 +102,7 @@ func validateClusterConfig(mscp *machineScope, fldPath *field.Path) *field.Error
 			return field.Required(fldPath.Child("cluster", "uuid"), "Missing cluster uuid")
 		} else {
 			clusterUUID := *mscp.providerSpec.Cluster.UUID
-			if _, err = mscp.nutanixClient.V3.GetCluster(clusterUUID); err != nil {
+			if _, err = mscp.nutanixClient.V3.GetCluster(context.TODO(), clusterUUID); err != nil {
 				errMsg = fmt.Sprintf("Failed to find cluster with uuid %v. error: %v", clusterUUID, err)
 				return field.Invalid(fldPath.Child("cluster", "uuid"), clusterUUID, errMsg)
 			}
@@ -138,7 +139,7 @@ func validateImageConfig(mscp *machineScope, fldPath *field.Path) *field.Error {
 			return field.Required(fldPath.Child("image", "uuid"), "Missing image uuid")
 		} else {
 			imageUUID := *mscp.providerSpec.Image.UUID
-			if _, err = mscp.nutanixClient.V3.GetImage(imageUUID); err != nil {
+			if _, err = mscp.nutanixClient.V3.GetImage(context.TODO(), imageUUID); err != nil {
 				errMsg = fmt.Sprintf("Failed to find image with uuid %v. error: %v", imageUUID, err)
 				return field.Invalid(fldPath.Child("image", "uuid"), imageUUID, errMsg)
 			}
@@ -173,7 +174,7 @@ func validateSubnetConfig(mscp *machineScope, subnet *machinev1.NutanixResourceI
 		if subnet.UUID == nil || *subnet.UUID == "" {
 			return field.Required(fldPath.Child("subnet").Child("uuid"), "Missing subnet uuid")
 		} else {
-			if _, err = mscp.nutanixClient.V3.GetSubnet(*subnet.UUID); err != nil {
+			if _, err = mscp.nutanixClient.V3.GetSubnet(context.TODO(), *subnet.UUID); err != nil {
 				errMsg = fmt.Sprintf("Failed to find subnet with uuid %v. error: %v", *subnet.UUID, err)
 				return field.Invalid(fldPath.Child("subnet", "uuid"), *subnet.UUID, errMsg)
 			}
@@ -267,7 +268,7 @@ func createVM(mscp *machineScope, userData []byte) (*nutanixClientV3.VMIntentRes
 
 		vmInput.Spec = &vmSpec
 		vmInput.Metadata = &vmMetadata
-		vm, err = mscp.nutanixClient.V3.CreateVM(&vmInput)
+		vm, err = mscp.nutanixClient.V3.CreateVM(context.TODO(), &vmInput)
 		if err != nil {
 			klog.Errorf("Failed to create VM %q. error: %v", vmName, err)
 			return nil, err
@@ -300,7 +301,7 @@ func createVM(mscp *machineScope, userData []byte) (*nutanixClientV3.VMIntentRes
 func findVMByUUID(ntnxclient *nutanixClientV3.Client, uuid string) (*nutanixClientV3.VMIntentResponse, error) {
 	klog.Infof("Checking if VM with UUID %s exists.", uuid)
 
-	response, err := ntnxclient.V3.GetVM(uuid)
+	response, err := ntnxclient.V3.GetVM(context.TODO(), uuid)
 	if err != nil {
 		klog.Errorf("Failed to find VM by vmUUID %s. error: %v", uuid, err)
 		return nil, err
@@ -313,7 +314,7 @@ func findVMByUUID(ntnxclient *nutanixClientV3.Client, uuid string) (*nutanixClie
 func findVMByName(ntnxclient *nutanixClientV3.Client, vmName string) (*nutanixClientV3.VMIntentResponse, error) {
 	klog.Infof("Checking if VM with name %q exists.", vmName)
 
-	res, err := ntnxclient.V3.ListVM(&nutanixClientV3.DSMetadata{
+	res, err := ntnxclient.V3.ListVM(context.TODO(), &nutanixClientV3.DSMetadata{
 		Filter: utils.StringPtr(fmt.Sprintf("vm_name==%s", vmName))})
 
 	if err != nil {
@@ -346,7 +347,7 @@ func findVMByName(ntnxclient *nutanixClientV3.Client, vmName string) (*nutanixCl
 func deleteVM(ntnxclient *nutanixClientV3.Client, vmUUID string) error {
 	klog.Infof("Deleting VM with UUID %s.", vmUUID)
 
-	_, err := ntnxclient.V3.DeleteVM(vmUUID)
+	_, err := ntnxclient.V3.DeleteVM(context.TODO(), vmUUID)
 	if err != nil {
 		klog.Errorf("Error deleting vm with uuid %s. error: %v", vmUUID, err)
 		return err
@@ -369,7 +370,7 @@ func deleteVM(ntnxclient *nutanixClientV3.Client, vmUUID string) error {
 func findClusterUuidByName(ntnxclient *nutanixClientV3.Client, clusterName string) (*string, error) {
 	klog.Infof("Checking if cluster with name %q exists.", clusterName)
 
-	res, err := ntnxclient.V3.ListCluster(&nutanixClientV3.DSMetadata{
+	res, err := ntnxclient.V3.ListCluster(context.TODO(), &nutanixClientV3.DSMetadata{
 		//Kind: utils.StringPtr("cluster"),
 		Filter: utils.StringPtr(fmt.Sprintf("name==%s", clusterName)),
 	})
@@ -390,7 +391,7 @@ func findClusterUuidByName(ntnxclient *nutanixClientV3.Client, clusterName strin
 func findImageUuidByName(ntnxclient *nutanixClientV3.Client, imageName string) (*string, error) {
 	klog.Infof("Checking if image with name %q exists.", imageName)
 
-	res, err := ntnxclient.V3.ListImage(&nutanixClientV3.DSMetadata{
+	res, err := ntnxclient.V3.ListImage(context.TODO(), &nutanixClientV3.DSMetadata{
 		//Kind: utils.StringPtr("image"),
 		Filter: utils.StringPtr(fmt.Sprintf("name==%s", imageName)),
 	})
@@ -411,7 +412,7 @@ func findImageUuidByName(ntnxclient *nutanixClientV3.Client, imageName string) (
 func findSubnetUuidByName(ntnxclient *nutanixClientV3.Client, subnetName string) (*string, error) {
 	klog.Infof("Checking if subnet with name %q exists.", subnetName)
 
-	res, err := ntnxclient.V3.ListSubnet(&nutanixClientV3.DSMetadata{
+	res, err := ntnxclient.V3.ListSubnet(context.TODO(), &nutanixClientV3.DSMetadata{
 		//Kind: utils.StringPtr("subnet"),
 		Filter: utils.StringPtr(fmt.Sprintf("name==%s", subnetName)),
 	})
@@ -428,13 +429,13 @@ func findSubnetUuidByName(ntnxclient *nutanixClientV3.Client, subnetName string)
 	return res.Entities[0].Metadata.UUID, nil
 }
 
-func getPrismCentralCluster(ntnxclient *nutanixClientV3.Client) (*nutanixClientV3.ClusterIntentResource, error) {
-	clusterList, err := ntnxclient.V3.ListAllCluster()
+func getPrismCentralCluster(ntnxclient *nutanixClientV3.Client) (*nutanixClientV3.ClusterIntentResponse, error) {
+	clusterList, err := ntnxclient.V3.ListAllCluster(context.TODO(), "")
 	if err != nil {
 		return nil, err
 	}
 
-	foundPCs := make([]*nutanixClientV3.ClusterIntentResource, 0)
+	foundPCs := make([]*nutanixClientV3.ClusterIntentResponse, 0)
 	for _, cl := range clusterList.Entities {
 		if cl.Status != nil && cl.Status.Resources != nil && cl.Status.Resources.Config != nil {
 			serviceList := cl.Status.Resources.Config.ServiceList

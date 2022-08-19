@@ -1,12 +1,19 @@
 package client
 
 import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 
-	nutanixClient "github.com/nutanix-cloud-native/prism-go-client/pkg/nutanix"
-	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/pkg/nutanix/v3"
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
+	nutanixClient "github.com/nutanix-cloud-native/prism-go-client"
+	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/v3"
+	"go.uber.org/zap"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -20,7 +27,10 @@ const (
 	// kubeCloudConfigName is the name of the kube cloud config ConfigMap
 	kubeCloudConfigName = "kube-cloud-config"
 	// cloudCABundleKey is the key in the kube cloud config ConfigMap where the custom CA bundle is located
-	cloudCABundleKey = "ca-bundle.pem"
+	cloudCABundleKey         = "ca-bundle.pem"
+	userCAConfigMapNamespace = "openshift-config"
+	userCAConfigMap          = "user-ca-bundle"
+	userCABundleKey          = "ca-bundle.crt"
 
 	// Nutanix credential keys
 	NutanixEndpointKey = "NUTANIX_PRISM_CENTRAL_ENDPOINT"
@@ -32,6 +42,8 @@ const (
 type ClientOptions struct {
 	Credentials *nutanixClient.Credentials
 	Debug       bool
+
+	kubeClient kubernetes.Interface
 }
 
 func Client(options *ClientOptions) (*nutanixClientV3.Client, error) {
@@ -52,10 +64,33 @@ func Client(options *ClientOptions) (*nutanixClientV3.Client, error) {
 		options.Credentials.URL = fmt.Sprintf("%s:%s", options.Credentials.Endpoint, options.Credentials.Port)
 	}
 
-	klog.Infof("To create nutanixClient with creds: (url: %s, insecure: %v, debug-log: %v)", options.Credentials.URL, options.Credentials.Insecure, options.Debug)
-	cli, err := nutanixClientV3.NewV3Client(*options.Credentials, options.Debug)
+	zapLog, err := zap.NewProduction()
 	if err != nil {
-		klog.Errorf("Failed to create the nutanix client. error: %v", err)
+		return nil, err
+	}
+	if options.Debug {
+		zapLog, err = zap.NewDevelopment()
+		if err != nil {
+			return nil, err
+		}
+	}
+	logger := zapr.NewLogger(zapLog)
+
+	clientOpts := []nutanixClientV3.ClientOption{
+		nutanixClientV3.WithLogger(&logger),
+	}
+	ctx := logr.NewContext(context.Background(), logger)
+	if certs := getCACertificates(ctx, options.kubeClient); certs != nil {
+		logger.V(1).Info("Using custom CA certificate")
+		for _, cert := range certs {
+			clientOpts = append(clientOpts, nutanixClientV3.WithCertificate(cert))
+		}
+	}
+
+	logger.V(1).Info("Creating new v3 client", "endpoint", options.Credentials.URL)
+	cli, err := nutanixClientV3.NewV3Client(*options.Credentials, clientOpts...)
+	if err != nil {
+		logger.Error(err, "failed to create the nutanix v3 client")
 		return nil, err
 	}
 
@@ -67,4 +102,46 @@ func getEnvVar(key string) (val string) {
 		return val
 	}
 	return
+}
+
+// getCACertificate gets the CA certificates from the user-ca-bundle configmap
+func getCACertificates(ctx context.Context, kubeClient kubernetes.Interface) []*x509.Certificate {
+	logger := logr.FromContextOrDiscard(ctx)
+	configMap, err := kubeClient.CoreV1().ConfigMaps(userCAConfigMapNamespace).Get(ctx, userCAConfigMap, metav1.GetOptions{})
+	if err != nil {
+		logger.Info("failed to get user-ca-bundle configmap", "error", err)
+		return nil
+	}
+
+	cacert, ok := configMap.Data[userCABundleKey]
+	if !ok {
+		logger.Info("failed to get cloud CA bundle from configmap")
+		return nil
+	}
+
+	pemBlocks := []byte(cacert)
+	certs := make([]*x509.Certificate, 0)
+	for {
+		block, rest := pem.Decode(pemBlocks)
+		if block == nil {
+			break
+		}
+		pemBlocks = rest
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			logger.Error(err, "failed to parse certificate", "certificate", block.Bytes)
+			break
+		}
+		certs = append(certs, cert)
+	}
+
+	if len(certs) == 0 {
+		logger.Info("failed to parse any certificates from user-ca-bundle")
+		return nil
+	}
+
+	return certs
 }

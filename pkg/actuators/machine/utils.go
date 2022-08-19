@@ -1,10 +1,11 @@
 package machine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
-	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/pkg/nutanix/v3"
+	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/v3"
 	machinev1 "github.com/openshift/api/machine/v1"
 	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
 	machinecontroller "github.com/openshift/machine-api-operator/pkg/controller/machine"
@@ -107,7 +108,7 @@ func addCategory(mscp *machineScope, vmMetadata *nutanixClientV3.Metadata) error
 	}
 
 	categoryKey := fmt.Sprintf("%s%s", NutanixCategoryKeyPrefix, clusterID)
-	_, err = mscp.nutanixClient.V3.GetCategoryValue(categoryKey, NutanixCategoryValue)
+	_, err = mscp.nutanixClient.V3.GetCategoryValue(context.TODO(), categoryKey, NutanixCategoryValue)
 	if err != nil {
 		klog.Errorf("%s: failed to find the category with key %q and value %q. error: %v", mscp.machine.Name, categoryKey, NutanixCategoryValue, err)
 		return err

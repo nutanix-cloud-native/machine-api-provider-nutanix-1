@@ -1,13 +1,14 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"time"
 
 	"k8s.io/klog"
 
-	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/pkg/nutanix/v3"
+	nutanixClientV3 "github.com/nutanix-cloud-native/prism-go-client/v3"
 )
 
 type stateRefreshFunc func() (string, error)
@@ -57,7 +58,7 @@ func waitForState(errCh chan<- error, target string, refresh stateRefreshFunc) e
 func waitUntilVMStateFunc(conn *nutanixClientV3.Client, uuid string) stateRefreshFunc {
 	return func() (string, error) {
 		klog.V(5).Infof("Check if vm with uuid %s exists", uuid)
-		resp, err := conn.V3.GetVM(uuid)
+		resp, err := conn.V3.GetVM(context.TODO(), uuid)
 
 		if resp.Status == nil ||
 			(*resp.Status.State == "ERROR" && *resp.Status.MessageList[0].Reason == "ENTITY_NOT_FOUND") {
@@ -86,7 +87,7 @@ func waitUntilVMStateFunc(conn *nutanixClientV3.Client, uuid string) stateRefres
 func waitUntilSubnetStateFunc(conn *nutanixClientV3.Client, uuid string) stateRefreshFunc {
 	return func() (string, error) {
 		klog.V(5).Infof("Check if subnet with uuid %s exists", uuid)
-		resp, err := conn.V3.GetSubnet(uuid)
+		resp, err := conn.V3.GetSubnet(context.TODO(), uuid)
 
 		if resp.Status == nil ||
 			(*resp.Status.State == "ERROR" && *resp.Status.MessageList[0].Reason == "ENTITY_NOT_FOUND") {
