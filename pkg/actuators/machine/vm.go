@@ -85,6 +85,19 @@ func validateVMConfig(mscp *machineScope) field.ErrorList {
 		errList = append(errList, field.Invalid(fldPath.Child("bootType"), mscp.providerSpec.BootType, errMsg))
 	}
 
+	// verify the project configuration
+	if fldErr := validateProjectConfig(mscp, fldPath); fldErr != nil {
+		errList = append(errList, fldErr)
+	}
+
+	// verify the categories configuration
+	if len(mscp.providerSpec.Categories) > 0 {
+		fldErrs := validateCategoriesConfig(mscp, fldPath)
+		for _, fldErr := range fldErrs {
+			errList = append(errList, fldErr)
+		}
+	}
+
 	return errList
 }
 
@@ -197,6 +210,58 @@ func validateSubnetConfig(mscp *machineScope, subnet *machinev1.NutanixResourceI
 	return nil
 }
 
+func validateProjectConfig(mscp *machineScope, fldPath *field.Path) *field.Error {
+	var err error
+	var errMsg string
+
+	switch mscp.providerSpec.Project.Type {
+	case "":
+		// ignore if not configured
+		return nil
+	case machinev1.NutanixIdentifierName:
+		if mscp.providerSpec.Project.Name == nil || *mscp.providerSpec.Project.Name == "" {
+			return field.Required(fldPath.Child("project", "name"), "Missing projct name")
+		} else {
+			projectName := *mscp.providerSpec.Project.Name
+			projectRefUuidPtr, err := findProjectUuidByName(mscp.nutanixClient, projectName)
+			if err != nil {
+				errMsg = fmt.Sprintf("Failed to find project with name %q. error: %v", projectName, err)
+				return field.Invalid(fldPath.Child("project", "name"), projectName, errMsg)
+			} else {
+				mscp.providerSpec.Project.Type = machinev1.NutanixIdentifierUUID
+				mscp.providerSpec.Project.UUID = projectRefUuidPtr
+			}
+		}
+	case machinev1.NutanixIdentifierUUID:
+		if mscp.providerSpec.Project.UUID == nil || *mscp.providerSpec.Project.UUID == "" {
+			return field.Required(fldPath.Child("project", "uuid"), "Missing project uuid")
+		} else {
+			projectUUID := *mscp.providerSpec.Project.UUID
+			if _, err = mscp.nutanixClient.V3.GetProject(projectUUID); err != nil {
+				errMsg = fmt.Sprintf("Failed to find project with uuid %v. error: %v", projectUUID, err)
+				return field.Invalid(fldPath.Child("project", "uuid"), projectUUID, errMsg)
+			}
+		}
+	default:
+		errMsg = fmt.Sprintf("Invalid project identifier type, valid types are: %q, %q.", machinev1.NutanixIdentifierName, machinev1.NutanixIdentifierUUID)
+		return field.Invalid(fldPath.Child("project", "type"), mscp.providerSpec.Project.Type, errMsg)
+	}
+
+	return nil
+}
+
+func validateCategoriesConfig(mscp *machineScope, fldPath *field.Path) (fldErrs []*field.Error) {
+	for _, category := range mscp.providerSpec.Categories {
+		_, err := mscp.nutanixClient.V3.GetCategoryValue(category.Key, category.Value)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to find the category with key %q and value %q. error: %v", category.Key, category.Value, err)
+			fldErrs = append(fldErrs, field.Invalid(fldPath.Child("categories"), category, errMsg))
+		}
+	}
+
+	return fldErrs
+}
+
 // CreateVM creates a VM and is invoked by the NutanixMachineReconciler
 func createVM(mscp *machineScope, userData []byte) (*nutanixClientV3.VMIntentResponse, error) {
 
@@ -249,12 +314,19 @@ func createVM(mscp *machineScope, userData []byte) (*nutanixClientV3.VMIntentRes
 			SpecVersion: utils.Int64Ptr(1),
 		}
 
-		// Add the category for installer clueanup the VM at cluster torn-down time
-		// if the category exists in PC
-		if err := addCategory(mscp, &vmMetadata); err != nil {
-			klog.Warningf("Failed to add category to the vm %q. %v", vmName, err)
+		// Add the projectReference if project is configured
+		if mscp.providerSpec.Project.Type == machinev1.NutanixIdentifierUUID {
+			vmMetadata.ProjectReference = &nutanixClientV3.Reference{
+				Kind: utils.StringPtr("project"),
+				UUID: mscp.providerSpec.Project.UUID,
+			}
+		}
+
+		// Add the categories
+		if err := addCategories(mscp, &vmMetadata); err != nil {
+			klog.Warningf("Failed to add categories to the vm %q. %v", vmName, err)
 		} else {
-			klog.Infof("%s: added the category to the vm %q: %v", mscp.machine.Name, vmName, vmMetadata.Categories)
+			klog.Infof("%s: added the categories to the vm %q: %v", mscp.machine.Name, vmName, vmMetadata.Categories)
 		}
 
 		vmSpec.Resources = &nutanixClientV3.VMResources{
@@ -307,7 +379,7 @@ func createVM(mscp *machineScope, userData []byte) (*nutanixClientV3.VMIntentRes
 	}
 
 	vm, err = findVMByUUID(mscp.nutanixClient, vmUuid)
-	for err != nil {
+	if err != nil {
 		klog.Errorf("Failed to find the vm with UUID %s. %v", vmUuid, err)
 		return nil, err
 	}
@@ -400,7 +472,9 @@ func findClusterUuidByName(ntnxclient *nutanixClientV3.Client, clusterName strin
 	}
 
 	if len(res.Entities) > 1 {
-		klog.Warningf("Found more than one (%v) clusters with name %q.", len(res.Entities), clusterName)
+		err = fmt.Errorf("Found more than one (%v) clusters with name %q.", len(res.Entities), clusterName)
+		klog.Errorf(err.Error())
+		return nil, err
 	}
 
 	return res.Entities[0].Metadata.UUID, nil
@@ -421,7 +495,9 @@ func findImageUuidByName(ntnxclient *nutanixClientV3.Client, imageName string) (
 	}
 
 	if len(res.Entities) > 1 {
-		klog.Warningf("Found more than one (%v) images with name %q.", len(res.Entities), imageName)
+		err = fmt.Errorf("Found more than one (%v) images with name %q.", len(res.Entities), imageName)
+		klog.Errorf(err.Error())
+		return nil, err
 	}
 
 	return res.Entities[0].Metadata.UUID, nil
@@ -442,7 +518,33 @@ func findSubnetUuidByName(ntnxclient *nutanixClientV3.Client, subnetName string)
 	}
 
 	if len(res.Entities) > 1 {
-		klog.Warningf("Found more than one (%v) subnets with name %q.", len(res.Entities), subnetName)
+		err = fmt.Errorf("Found more than one (%v) subnets with name %q.", len(res.Entities), subnetName)
+		klog.Errorf(err.Error())
+		return nil, err
+	}
+
+	return res.Entities[0].Metadata.UUID, nil
+}
+
+// findProjectUuidByName retrieves the project uuid by the given project name
+func findProjectUuidByName(ntnxclient *nutanixClientV3.Client, projectName string) (*string, error) {
+	klog.Infof("Checking if project with name %q exists.", projectName)
+
+	res, err := ntnxclient.V3.ListProject(&nutanixClientV3.DSMetadata{
+		//Kind: utils.StringPtr("project"),
+		Filter: utils.StringPtr(fmt.Sprintf("name==%s", projectName)),
+	})
+	if err != nil || len(res.Entities) == 0 {
+		e1 := fmt.Errorf("Failed to find project by name %q. error: %w", projectName, err)
+		klog.Errorf(e1.Error())
+		return nil, e1
+	}
+
+	if len(res.Entities) > 1 {
+		//klog.Warningf("Found more than one (%v) projects with name %q.", len(res.Entities), projectName)
+		err = fmt.Errorf("Found more than one (%v) projects with name %q.", len(res.Entities), projectName)
+		klog.Errorf(err.Error())
+		return nil, err
 	}
 
 	return res.Entities[0].Metadata.UUID, nil

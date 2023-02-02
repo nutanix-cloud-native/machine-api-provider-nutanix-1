@@ -165,6 +165,7 @@ func TestMachineEvents(t *testing.T) {
 				pspec.MemorySize = resource.MustParse("1.5Gi")
 				pspec.SystemDiskSize = resource.MustParse("18Gi")
 				pspec.BootType = "invalid-boottype"
+				pspec.Project.Type = "uuid"
 				return pspec
 			}(),
 			operation: func(actuator *Actuator, machine *machinev1beta1.Machine) {
@@ -178,6 +179,7 @@ func TestMachineEvents(t *testing.T) {
 				"The minimum memorySize is 2Gi bytes",
 				"The minimum systemDiskSize is 20Gi bytes",
 				"Invalid bootType, the valid bootType values are: \"\", \"Legacy\", \"UEFI\", \"SecureBoot\"",
+				"Missing project uuid",
 			},
 		},
 		{
